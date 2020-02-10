@@ -167,7 +167,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let output = Command::new("hg")
         .arg("commit")
         .arg("-m")
-        .arg(format!("Bug XXX - Bump Cranelift to {:?}; r?", last_commit))
+        .arg(format!("Bug XXX - Bump Cranelift to {}; r?", last_commit))
         .output()
         .expect("couldn't run hg commit");
     if !output.status.success() {
