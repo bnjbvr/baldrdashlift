@@ -1,0 +1,10 @@
+[package]
+name = "update-baldrdash"
+version = "0.1.0"
+authors = ["Benjamin Bouvier <public@benj.me>"]
+edition = "2018"
+
+[dependencies]
+reqwest = { version = "0.10.1", features = ["json"] }
+tokio = { version = "0.2", features = ["full"] }
+json = "*"
