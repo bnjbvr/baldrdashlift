@@ -112,7 +112,7 @@ fn replace_commit_sha(repo_path: &str, sha: &str) {
 }
 
 async fn find_last_commit_sha(client: &Client) -> Result<String, Box<dyn std::error::Error>> {
-    const URL: &str = "https://api.github.com/repos/bytecodealliance/cranelift/commits/master";
+    const URL: &str = "https://api.github.com/repos/bytecodealliance/wasmtime/commits/master";
 
     let resp = client.get(URL).send().await?.text().await?;
     let object = json::parse(&resp)?;
