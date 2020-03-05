@@ -171,12 +171,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .output()
         .expect("couldn't run hg commit");
     if !output.status.success() {
-        println!(
-            "Couldn't commit: {} {}",
-            String::from_utf8(output.stdout)?,
-            String::from_utf8(output.stderr)?
-        );
-        process::exit(-1);
+        let stdout = String::from_utf8(output.stdout)?;
+        let stderr = String::from_utf8(output.stderr)?;
+        if stdout.trim() != "nothing changed" {
+            println!("Couldn't commit: {} {}", stdout, stderr,);
+            process::exit(-1);
+        }
     }
 
     // Run mach vendor rust.
