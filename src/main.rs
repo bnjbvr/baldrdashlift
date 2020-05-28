@@ -1,26 +1,72 @@
-use reqwest::{header, Client};
+use env::Args;
 use std::env;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::Path;
-use std::process::{self, Command};
+use std::{
+    error::Error,
+    fmt,
+    process::{self, Command},
+};
 
-fn make_client() -> Client {
-    let mut headers = header::HeaderMap::new();
+mod hg;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn Error>> {
+    let mut args = env::args();
+
+    let _ = args.next().unwrap();
+
+    let command = match args.next() {
+        Some(command) => command,
+        None => show_usage(),
+    };
+
+    match command.as_str() {
+        "build" => run_build(args).await,
+        "bump" => run_bump(args).await,
+        "local" => run_local(args).await,
+        _ => show_usage(),
+    }
+}
+
+struct SimpleError(&'static str);
+
+impl fmt::Debug for SimpleError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl fmt::Display for SimpleError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl Error for SimpleError {}
+
+fn make_client() -> reqwest::Client {
+    let mut headers = reqwest::header::HeaderMap::new();
 
     // Fake a plausible user agent to pass through anti DDOS counter measures.
     headers.insert(
-        header::USER_AGENT,
-        header::HeaderValue::from_str(
+        reqwest::header::USER_AGENT,
+        reqwest::header::HeaderValue::from_str(
             "Mozilla/5.0 (X11; Linux x86_64; rv:68.0) Gecko Firefox/68.0",
         )
         .unwrap(),
     );
 
-    Client::builder().default_headers(headers).build().unwrap()
+    reqwest::Client::builder()
+        .default_headers(headers)
+        .build()
+        .unwrap()
 }
 
-async fn get_cranelift_version(client: &Client) -> Result<String, Box<dyn std::error::Error>> {
+async fn get_cranelift_version(
+    client: &reqwest::Client,
+) -> Result<String, Box<dyn std::error::Error>> {
     const URL: &str = "https://crates.io/api/v1/crates/cranelift-codegen";
 
     let resp = client.get(URL).send().await?.text().await?;
@@ -30,8 +76,13 @@ async fn get_cranelift_version(client: &Client) -> Result<String, Box<dyn std::e
     Ok(result.to_string())
 }
 
+enum VersionSpec {
+    Fixed(String),
+    Path(String),
+}
+
 /// Replace the cranelift version in the Cranelift Cargo.toml file.
-fn replace_cranelift_version(repo_path: &str, version: &str) {
+fn replace_cranelift_version(repo_path: &str, version: VersionSpec) {
     println!("Replacing Cranelift version in its cargo file...");
     let cranelift_cargo_path = Path::new(&repo_path)
         .join("js")
@@ -50,12 +101,24 @@ fn replace_cranelift_version(repo_path: &str, version: &str) {
     let new_content = content_lines
         .map(|line| {
             if line.starts_with("cranelift-codegen =") {
+                let replacement = match &version {
+                    VersionSpec::Fixed(version_number) => {
+                        format!("version = \"{}\"", version_number)
+                    }
+                    VersionSpec::Path(path) => format!("path = \"{}codegen\"", path),
+                };
                 format!(
-                    r#"cranelift-codegen = {{ version = "{}", default-features = false }}"#,
-                    version
+                    r#"cranelift-codegen = {{ {}, default-features = false }}"#,
+                    replacement
                 )
             } else if line.starts_with("cranelift-wasm") {
-                format!(r#"cranelift-wasm = "{}""#, version)
+                let replacement = match &version {
+                    VersionSpec::Fixed(version_number) => {
+                        format!("version = \"{}\"", version_number)
+                    }
+                    VersionSpec::Path(path) => format!("path = \"{}wasm\"", path),
+                };
+                format!(r#"cranelift-wasm = {{ {} }}"#, replacement)
             } else {
                 line.into()
             }
@@ -111,7 +174,9 @@ fn replace_commit_sha(repo_path: &str, sha: &str) {
     println!("Done!");
 }
 
-async fn find_last_commit_sha(client: &Client) -> Result<String, Box<dyn std::error::Error>> {
+async fn find_last_commit_sha(
+    client: &reqwest::Client,
+) -> Result<String, Box<dyn std::error::Error>> {
     const URL: &str = "https://api.github.com/repos/bytecodealliance/wasmtime/commits/master";
 
     let resp = client.get(URL).send().await?.text().await?;
@@ -121,65 +186,7 @@ async fn find_last_commit_sha(client: &Client) -> Result<String, Box<dyn std::er
     Ok(result.to_string())
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut args = env::args();
-
-    let program_name = args.next().unwrap();
-    let repo_path = match args.next() {
-        Some(path) => path,
-        None => {
-            println!("missing path to repository");
-            println!("usage: {} path/to/repository", program_name);
-            process::exit(-1);
-        }
-    };
-
-    let build_dir = args.next();
-
-    // Set cwd to the repository.
-    env::set_current_dir(&repo_path).expect("couldn't set cwd");
-
-    // Make sure the repository doesn't have any changes.
-    let output = Command::new("hg")
-        .arg("diff")
-        .output()
-        .expect("couldn't run hg diff");
-    if !output.stdout.is_empty() {
-        println!("Diff isn't empty! aborting, please make sure the repository is clean before running this script");
-        process::exit(-1);
-    }
-
-    let client = make_client();
-
-    let version = get_cranelift_version(&client).await?;
-    println!("found version {}", version);
-
-    replace_cranelift_version(&repo_path, &version);
-
-    let last_commit = find_last_commit_sha(&client).await?;
-    println!("last commit {}", last_commit);
-
-    replace_commit_sha(&repo_path, &last_commit);
-
-    // Commit the change.
-    println!("Committing bump patch...");
-    let output = Command::new("hg")
-        .arg("commit")
-        .arg("-m")
-        .arg(format!("Bug XXX - Bump Cranelift to {}; r?", last_commit))
-        .output()
-        .expect("couldn't run hg commit");
-    if !output.status.success() {
-        let stdout = String::from_utf8(output.stdout)?;
-        let stderr = String::from_utf8(output.stderr)?;
-        if stdout.trim() != "nothing changed" {
-            println!("Couldn't commit: {} {}", stdout, stderr,);
-            process::exit(-1);
-        }
-    }
-
-    // Run mach vendor rust.
+fn mach_vendor_rust() -> Result<(), Box<dyn Error>> {
     println!("Running mach vendor rust...");
     let status = Command::new("./mach")
         .arg("vendor")
@@ -188,56 +195,147 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .expect("couldn't run mach vendor rust")
         .wait()?;
     if !status.success() {
-        println!("Error when running mach vendor rust");
-        process::exit(-1);
+        return Err(Box::new(SimpleError("Error when running mach vendor rust")));
     }
+    Ok(())
+}
+
+fn checks_before_bump(repo_path: &str) -> Result<(), Box<dyn Error>> {
+    // Set cwd to the repository.
+    env::set_current_dir(repo_path)?;
+
+    // Make sure the repository doesn't have any changes.
+    if hg::has_diff()? {
+        return Err(Box::new(SimpleError("Diff isn't empty! aborting, please make sure the repository is clean before running this script".into())));
+    }
+
+    Ok(())
+}
+
+fn repo_path_from_args(args: &mut Args) -> String {
+    match args.next() {
+        Some(path) => path,
+        None => show_usage(),
+    }
+}
+
+async fn run_bump(mut args: Args) -> Result<(), Box<dyn Error>> {
+    let repo_path = &repo_path_from_args(&mut args);
+
+    checks_before_bump(repo_path)?;
+
+    let client = make_client();
+
+    let version = get_cranelift_version(&client).await?;
+    println!("found version {}", version);
+
+    replace_cranelift_version(&repo_path, VersionSpec::Fixed(version));
+
+    let last_commit = find_last_commit_sha(&client).await?;
+    println!("last commit {}", last_commit);
+
+    replace_commit_sha(&repo_path, &last_commit);
+
+    // Commit the change.
+    println!("Committing bump patch...");
+    hg::commit(&format!("Bug XXX - Bump Cranelift to {}; r?", last_commit))?;
+
+    // Run mach vendor rust.
+    mach_vendor_rust()?;
 
     // Commit the vendor changges.
     println!("Committing vendor patch...");
-    let output = Command::new("hg")
-        .arg("commit")
-        .arg("-m")
-        .arg("Bug XXX - Output of mach vendor rust; r?")
-        .output()
-        .expect("couldn't run hg commit the second time");
-    if !output.status.success() {
-        println!(
-            "Couldn't commit: {} {}",
-            String::from_utf8(output.stdout)?,
-            String::from_utf8(output.stderr)?
-        );
-        process::exit(-1);
-    }
-
-    if let Some(build_dir) = build_dir {
-        // Switch to the build directory, run make, and tests.
-        env::set_current_dir(&build_dir).expect("couldn't set cwd to build dir");
-
-        // 8 threads is enough for y'all.
-        let nproc = Command::new("nproc").output();
-        let nproc = match nproc {
-            Ok(output) => {
-                let mut string = String::from_utf8(output.stdout)?;
-                string.retain(|c| !c.is_whitespace());
-                string.parse::<u32>()?
-            }
-            Err(_) => 8,
-        };
-
-        println!("Running make...");
-        let status = Command::new("make")
-            .arg(format!("-sj{}", nproc))
-            .spawn()
-            .expect("couldn't run make")
-            .wait()?;
-        if !status.success() {
-            println!("Error when running make",);
-            process::exit(-1);
-        }
-
-        // TODO run Spidermonkey tests with Cranelift?
-    }
+    hg::commit("Bug XXX - Output of mach vendor rust; r?")?;
 
     println!("Done, enjoy your day.");
     Ok(())
+}
+
+async fn run_build(mut args: Args) -> Result<(), Box<dyn Error>> {
+    let build_dir = match args.next() {
+        Some(build_dir) => build_dir,
+        None => {
+            return Err(Box::new(SimpleError(
+                "usage of `build`: build PATH_TO_BUILD_DIR",
+            )))
+        }
+    };
+
+    // Switch to the build directory, run make, and tests.
+    env::set_current_dir(&build_dir).expect("couldn't set cwd to build dir");
+
+    // As many threads as there are cpus, or 8 by default.
+    let nproc = Command::new("nproc").output();
+    let nproc = match nproc {
+        Ok(output) => {
+            let mut string = String::from_utf8(output.stdout)?;
+            string.retain(|c| !c.is_whitespace());
+            string.parse::<u32>()?
+        }
+        Err(_) => 8,
+    };
+
+    println!("Running make...");
+    let status = Command::new("make")
+        .arg(format!("-sj{}", nproc))
+        .spawn()
+        .expect("couldn't run make")
+        .wait()?;
+    if !status.success() {
+        return Err(Box::new(SimpleError("Error when running make")));
+    }
+
+    Ok(())
+}
+
+async fn run_local(mut args: Args) -> Result<(), Box<dyn Error>> {
+    let repo_path = repo_path_from_args(&mut args);
+
+    let mut wasmtime_path = match args.next() {
+        Some(path) => path,
+        None => {
+            return Err(Box::new(SimpleError(
+                "usage of `local`: local GECKO_REPO_PATH WASMTIME_REPO_PATH",
+            )));
+        }
+    };
+
+    if !wasmtime_path.ends_with("/") {
+        wasmtime_path += &"/";
+    }
+    wasmtime_path += &"cranelift/";
+
+    // Set cwd to the repository.
+    env::set_current_dir(&repo_path).expect("couldn't set cwd");
+
+    // Make sure the repository doesn't have any changes.
+    if hg::has_diff()? {
+        return Err(Box::new(SimpleError("Diff isn't empty! aborting, please make sure the repository is clean before running this script".into())));
+    }
+
+    replace_cranelift_version(&repo_path, VersionSpec::Path(wasmtime_path));
+
+    // Commit the change.
+    println!("Committing bump patch...");
+    hg::commit("No bug - do not check in - use local Cranelift")?;
+
+    // Run mach vendor rust.
+    mach_vendor_rust()?;
+
+    // Commit the vendor changges.
+    println!("Committing vendor patch...");
+    hg::commit("No bug - do not check in - result of mach vendor rust")?;
+
+    println!("Done, enjoy your day.");
+
+    Ok(())
+}
+
+fn show_usage() -> ! {
+    println!("usage: PROGRAM COMMAND");
+    println!("  where COMMAND is one of:");
+    println!("  bump GECKO_DIR                bump to the latest available version of Cranelift in tree");
+    println!("  build BUILD_DIR               run make in the build directory");
+    println!("  local GECKO_DIR WASMTIME_DIR  use the local version of Cranelift in this Gecko tree");
+    process::exit(-1);
 }
