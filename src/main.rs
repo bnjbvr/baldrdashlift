@@ -11,6 +11,8 @@ use std::{
 
 mod hg;
 
+const CRANELIFT_JS_SHELL_ARGS: &'static str = "--no-wasm-reftypes --no-wasm-simd --no-wasm-multi-value --shared-memory=off --wasm-compiler=cranelift";
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     let mut args = env::args();
@@ -26,6 +28,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         "build" => run_build(args).await,
         "bump" => run_bump(args).await,
         "local" => run_local(args).await,
+        "test" => run_test(args).await,
         _ => show_usage(),
     }
 }
@@ -215,7 +218,10 @@ fn checks_before_bump(repo_path: &str) -> Result<(), Box<dyn Error>> {
 fn repo_path_from_args(args: &mut Args) -> String {
     match args.next() {
         Some(path) => path,
-        None => show_usage(),
+        None => {
+            println!("Missing repository path.");
+            show_usage()
+        }
     }
 }
 
@@ -331,11 +337,58 @@ async fn run_local(mut args: Args) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+async fn run_test(mut args: Args) -> Result<(), Box<dyn Error>> {
+    let repo_path = repo_path_from_args(&mut args);
+
+    let mut build_path = match args.next() {
+        Some(path) => path,
+        None => {
+            return Err(Box::new(SimpleError(
+                "usage of `test`: test GECKO_DIR BUILD_DIR",
+            )))
+        }
+    };
+    if !build_path.ends_with("/") {
+        build_path += &"/";
+    }
+
+    let path_to_jit_tests = Path::join(Path::new(&repo_path), "js/src/jit-test/jit_test.py");
+    let path_to_shell = build_path + "dist/bin/js";
+
+    let shell_args = format!("--args \"{}\"", CRANELIFT_JS_SHELL_ARGS);
+
+    // Defaults to running the wasm test cases.
+    let which_tests = match args.next() {
+        Some(prefix) => prefix,
+        None => "wasm".to_string(),
+    };
+
+    println!("Running tests...");
+    let status = Command::new(path_to_jit_tests)
+        .arg(path_to_shell)
+        .arg(shell_args)
+        .arg(which_tests)
+        .spawn()
+        .expect("couldn't run tests")
+        .wait()?;
+
+    if !status.success() {
+        Err(Box::new(SimpleError("Test failures!")))
+    } else {
+        Ok(())
+    }
+}
+
 fn show_usage() -> ! {
     println!("usage: PROGRAM COMMAND");
     println!("  where COMMAND is one of:");
-    println!("  bump GECKO_DIR                bump to the latest available version of Cranelift in tree");
-    println!("  build BUILD_DIR               run make in the build directory");
-    println!("  local GECKO_DIR WASMTIME_DIR  use the local version of Cranelift in this Gecko tree");
+    println!(
+        "  bump GECKO_DIR                   bump to the latest available version of Cranelift in tree"
+    );
+    println!("  build BUILD_DIR                  run make in the build directory");
+    println!(
+        "  local GECKO_DIR WASMTIME_DIR     use the local version of Cranelift in this Gecko tree"
+    );
+    println!("  test GECKO_DIR BUILD_DIR PREFIX  run wasm tests with Cranelift");
     process::exit(-1);
 }
