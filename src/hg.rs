@@ -2,11 +2,11 @@ use crate::VCS;
 use std::path::PathBuf;
 use std::process::Command;
 
-pub(crate) struct HG();
+pub(crate) struct HG;
 
 impl HG {
-    pub(crate) fn new() -> HG {
-        HG()
+    pub(crate) fn new() -> Self {
+        Self
     }
 }
 
@@ -23,7 +23,7 @@ impl VCS for HG {
             .arg("-m")
             .arg(msg)
             .output()
-            .map_err(|err| format!("couldn't run hg commit: {}", err))?;
+            .map_err(|err| format!("couldn't start hg commit: {}", err))?;
 
         if !output.status.success() {
             let stdout = String::from_utf8(output.stdout).unwrap_or("(stdout unavailable)".into());
@@ -31,7 +31,10 @@ impl VCS for HG {
             if stdout.trim() == "nothing changed" {
                 Ok(())
             } else {
-                Err(format!("Couldn't commit: {} {}", stdout, stderr))
+                Err(format!(
+                    "hg commit returned an error: {} {}",
+                    stdout, stderr
+                ))
             }
         } else {
             Ok(())
@@ -42,7 +45,7 @@ impl VCS for HG {
         let output = Command::new("hg")
             .arg("diff")
             .output()
-            .map_err(|err| format!("Could not run hg: {}", err))?;
+            .map_err(|err| format!("Could not start hg diff: {}", err))?;
         Ok(!output.stdout.is_empty())
     }
 }
