@@ -1,6 +1,6 @@
 use env::Args;
 use std::env;
-use std::fs::File;
+use std::fs::{canonicalize, File};
 use std::io::{Read, Write};
 use std::path::Path;
 use std::{
@@ -215,9 +215,14 @@ fn checks_before_bump(repo_path: &str) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+fn canonicalize_path(s: String) -> String {
+    let pathbuf = canonicalize(&s).expect("Could not canonicalize path");
+    pathbuf.to_str().expect("Path is not UTF-8").to_string()
+}
+
 fn repo_path_from_args(args: &mut Args) -> String {
     match args.next() {
-        Some(path) => path,
+        Some(path) => canonicalize_path(path),
         None => {
             println!("Missing repository path.");
             show_usage()
@@ -266,6 +271,7 @@ async fn run_build(mut args: Args) -> Result<(), Box<dyn Error>> {
             )))
         }
     };
+    let build_dir = canonicalize_path(build_dir);
 
     // Switch to the build directory, run make, and tests.
     env::set_current_dir(&build_dir).expect("couldn't set cwd to build dir");
@@ -297,7 +303,7 @@ async fn run_build(mut args: Args) -> Result<(), Box<dyn Error>> {
 async fn run_local(mut args: Args) -> Result<(), Box<dyn Error>> {
     let repo_path = repo_path_from_args(&mut args);
 
-    let mut wasmtime_path = match args.next() {
+    let wasmtime_path = match args.next() {
         Some(path) => path,
         None => {
             return Err(Box::new(SimpleError(
@@ -305,6 +311,7 @@ async fn run_local(mut args: Args) -> Result<(), Box<dyn Error>> {
             )));
         }
     };
+    let mut wasmtime_path = canonicalize_path(wasmtime_path);
 
     if !wasmtime_path.ends_with("/") {
         wasmtime_path += &"/";
@@ -351,6 +358,7 @@ async fn run_test(mut args: Args) -> Result<(), Box<dyn Error>> {
     if !build_path.ends_with("/") {
         build_path += &"/";
     }
+    let build_path = canonicalize_path(build_path);
 
     let path_to_jit_tests = Path::join(Path::new(&repo_path), "js/src/jit-test/jit_test.py");
     let path_to_shell = build_path + "dist/bin/js";
