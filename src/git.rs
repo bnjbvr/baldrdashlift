@@ -2,28 +2,28 @@ use crate::VCS;
 use std::path::PathBuf;
 use std::process::Command;
 
-pub(crate) struct HG();
+pub(crate) struct Git();
 
-impl HG {
-    pub(crate) fn new() -> HG {
-        HG()
+impl Git {
+    pub(crate) fn new() -> Git {
+        Git()
     }
 }
 
-impl VCS for HG {
+impl VCS for Git {
     fn is_repo(&self, path: &str) -> bool {
         let mut pathbuf = PathBuf::from(path);
-        pathbuf.push(".hg");
+        pathbuf.push(".git");
         pathbuf.is_dir()
     }
 
     fn commit(&self, msg: &str) -> Result<(), String> {
-        let output = Command::new("hg")
+        let output = Command::new("git")
             .arg("commit")
-            .arg("-m")
+            .arg("-am")
             .arg(msg)
             .output()
-            .map_err(|err| format!("couldn't run hg commit: {}", err))?;
+            .map_err(|err| format!("couldn't run git commit: {}", err))?;
 
         if !output.status.success() {
             let stdout = String::from_utf8(output.stdout).unwrap_or("(stdout unavailable)".into());
@@ -39,7 +39,7 @@ impl VCS for HG {
     }
 
     fn has_diff(&self) -> Result<bool, String> {
-        let output = Command::new("hg")
+        let output = Command::new("git")
             .arg("diff")
             .output()
             .map_err(|err| format!("Could not run hg: {}", err))?;

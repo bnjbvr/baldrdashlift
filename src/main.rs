@@ -9,7 +9,26 @@ use std::{
     process::{self, Command},
 };
 
+mod git;
 mod hg;
+
+trait VCS {
+    fn is_repo(&self, path: &str) -> bool;
+    fn commit(&self, msg: &str) -> Result<(), String>;
+    fn has_diff(&self) -> Result<bool, String>;
+}
+
+fn get_vcs_for_repo(path: &str) -> Result<Box<dyn VCS>, Box<dyn Error>> {
+    let h = hg::HG::new();
+    let g = git::Git::new();
+    if h.is_repo(path) {
+        Ok(Box::new(h))
+    } else if g.is_repo(path) {
+        Ok(Box::new(g))
+    } else {
+        Err(format!("Not a git or Mercurial repository: {}", path).into())
+    }
+}
 
 const CRANELIFT_JS_SHELL_ARGS: &'static str = "--no-wasm-reftypes --no-wasm-simd --no-wasm-multi-value --shared-memory=off --wasm-compiler=cranelift";
 
@@ -207,8 +226,10 @@ fn checks_before_bump(repo_path: &str) -> Result<(), Box<dyn Error>> {
     // Set cwd to the repository.
     env::set_current_dir(repo_path)?;
 
+    let repo = get_vcs_for_repo(repo_path)?;
+
     // Make sure the repository doesn't have any changes.
-    if hg::has_diff()? {
+    if repo.has_diff()? {
         return Err(Box::new(SimpleError("Diff isn't empty! aborting, please make sure the repository is clean before running this script".into())));
     }
 
@@ -232,6 +253,7 @@ fn repo_path_from_args(args: &mut Args) -> String {
 
 async fn run_bump(mut args: Args) -> Result<(), Box<dyn Error>> {
     let repo_path = &repo_path_from_args(&mut args);
+    let repo = get_vcs_for_repo(repo_path)?;
 
     checks_before_bump(repo_path)?;
 
@@ -249,14 +271,14 @@ async fn run_bump(mut args: Args) -> Result<(), Box<dyn Error>> {
 
     // Commit the change.
     println!("Committing bump patch...");
-    hg::commit(&format!("Bug XXX - Bump Cranelift to {}; r?", last_commit))?;
+    repo.commit(&format!("Bug XXX - Bump Cranelift to {}; r?", last_commit))?;
 
     // Run mach vendor rust.
     mach_vendor_rust()?;
 
     // Commit the vendor changges.
     println!("Committing vendor patch...");
-    hg::commit("Bug XXX - Output of mach vendor rust; r?")?;
+    repo.commit("Bug XXX - Output of mach vendor rust; r?")?;
 
     println!("Done, enjoy your day.");
     Ok(())
@@ -302,6 +324,7 @@ async fn run_build(mut args: Args) -> Result<(), Box<dyn Error>> {
 
 async fn run_local(mut args: Args) -> Result<(), Box<dyn Error>> {
     let repo_path = repo_path_from_args(&mut args);
+    let repo = get_vcs_for_repo(&repo_path)?;
 
     let wasmtime_path = match args.next() {
         Some(path) => path,
@@ -322,7 +345,7 @@ async fn run_local(mut args: Args) -> Result<(), Box<dyn Error>> {
     env::set_current_dir(&repo_path).expect("couldn't set cwd");
 
     // Make sure the repository doesn't have any changes.
-    if hg::has_diff()? {
+    if repo.has_diff()? {
         return Err(Box::new(SimpleError("Diff isn't empty! aborting, please make sure the repository is clean before running this script".into())));
     }
 
@@ -330,14 +353,14 @@ async fn run_local(mut args: Args) -> Result<(), Box<dyn Error>> {
 
     // Commit the change.
     println!("Committing bump patch...");
-    hg::commit("No bug - do not check in - use local Cranelift")?;
+    repo.commit("No bug - do not check in - use local Cranelift")?;
 
     // Run mach vendor rust.
     mach_vendor_rust()?;
 
     // Commit the vendor changges.
     println!("Committing vendor patch...");
-    hg::commit("No bug - do not check in - result of mach vendor rust")?;
+    repo.commit("No bug - do not check in - result of mach vendor rust")?;
 
     println!("Done, enjoy your day.");
 
