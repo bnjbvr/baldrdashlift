@@ -68,7 +68,7 @@ impl fmt::Display for SimpleError {
 
 impl Error for SimpleError {}
 
-fn make_client() -> reqwest::Client {
+fn make_http_client() -> reqwest::Client {
     let mut headers = reqwest::header::HeaderMap::new();
 
     // Fake a plausible user agent to pass through anti DDOS counter measures.
@@ -222,7 +222,7 @@ fn mach_vendor_rust() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn checks_before_bump(repo_path: &str) -> Result<(), Box<dyn Error>> {
+fn check_gecko_repo(repo_path: &str) -> Result<Box<dyn VCS>, Box<dyn Error>> {
     // Set cwd to the repository.
     env::set_current_dir(repo_path)?;
 
@@ -233,17 +233,28 @@ fn checks_before_bump(repo_path: &str) -> Result<(), Box<dyn Error>> {
         return Err(Box::new(SimpleError("Diff isn't empty! aborting, please make sure the repository is clean before running this script".into())));
     }
 
-    Ok(())
+    Ok(repo)
 }
 
-fn canonicalize_path(s: String) -> String {
+/// Canonicalizes a relative/absolute dir path into an absolute path with a trailing slash at the
+/// end.
+fn canonicalize_dir(s: String) -> String {
+    // Canonicalize the path.
     let pathbuf = canonicalize(&s).expect("Could not canonicalize path");
-    pathbuf.to_str().expect("Path is not UTF-8").to_string()
+    let mut s = pathbuf.to_str().expect("Path is not UTF-8").to_string();
+
+    // Add the trailing slash if it's not there yet.
+    if s.ends_with("/") {
+        s
+    } else {
+        s += &"/";
+        s
+    }
 }
 
-fn repo_path_from_args(args: &mut Args) -> String {
+fn get_repo_arg(args: &mut Args) -> String {
     match args.next() {
-        Some(path) => canonicalize_path(path),
+        Some(path) => canonicalize_dir(path),
         None => {
             println!("Missing repository path.");
             show_usage()
@@ -252,21 +263,17 @@ fn repo_path_from_args(args: &mut Args) -> String {
 }
 
 async fn run_bump(mut args: Args) -> Result<(), Box<dyn Error>> {
-    let repo_path = &repo_path_from_args(&mut args);
-    let repo = get_vcs_for_repo(repo_path)?;
+    let repo_path = &get_repo_arg(&mut args);
+    let repo = check_gecko_repo(repo_path)?;
 
-    checks_before_bump(repo_path)?;
+    let http_client = make_http_client();
 
-    let client = make_client();
-
-    let version = get_cranelift_version(&client).await?;
+    let version = get_cranelift_version(&http_client).await?;
     println!("found version {}", version);
-
     replace_cranelift_version(&repo_path, VersionSpec::Fixed(version));
 
-    let last_commit = find_last_commit_sha(&client).await?;
+    let last_commit = find_last_commit_sha(&http_client).await?;
     println!("last commit {}", last_commit);
-
     replace_commit_sha(&repo_path, &last_commit);
 
     // Commit the change.
@@ -293,7 +300,7 @@ async fn run_build(mut args: Args) -> Result<(), Box<dyn Error>> {
             )))
         }
     };
-    let build_dir = canonicalize_path(build_dir);
+    let build_dir = canonicalize_dir(build_dir);
 
     // Switch to the build directory, run make, and tests.
     env::set_current_dir(&build_dir).expect("couldn't set cwd to build dir");
@@ -323,8 +330,8 @@ async fn run_build(mut args: Args) -> Result<(), Box<dyn Error>> {
 }
 
 async fn run_local(mut args: Args) -> Result<(), Box<dyn Error>> {
-    let repo_path = repo_path_from_args(&mut args);
-    let repo = get_vcs_for_repo(&repo_path)?;
+    // Read arguments: GECKO_PATH WASMTIME_PATH
+    let repo_path = get_repo_arg(&mut args);
 
     let wasmtime_path = match args.next() {
         Some(path) => path,
@@ -334,22 +341,12 @@ async fn run_local(mut args: Args) -> Result<(), Box<dyn Error>> {
             )));
         }
     };
-    let mut wasmtime_path = canonicalize_path(wasmtime_path);
+    let cranelift_path = canonicalize_dir(wasmtime_path) + &"cranelift";
 
-    if !wasmtime_path.ends_with("/") {
-        wasmtime_path += &"/";
-    }
-    wasmtime_path += &"cranelift/";
+    let repo = check_gecko_repo(&repo_path)?;
 
-    // Set cwd to the repository.
-    env::set_current_dir(&repo_path).expect("couldn't set cwd");
-
-    // Make sure the repository doesn't have any changes.
-    if repo.has_diff()? {
-        return Err(Box::new(SimpleError("Diff isn't empty! aborting, please make sure the repository is clean before running this script".into())));
-    }
-
-    replace_cranelift_version(&repo_path, VersionSpec::Path(wasmtime_path));
+    // Replace the version of Cranelift in the Cargo.toml file.
+    replace_cranelift_version(&repo_path, VersionSpec::Path(cranelift_path));
 
     // Commit the change.
     println!("Committing bump patch...");
@@ -368,23 +365,19 @@ async fn run_local(mut args: Args) -> Result<(), Box<dyn Error>> {
 }
 
 async fn run_test(mut args: Args) -> Result<(), Box<dyn Error>> {
-    let repo_path = repo_path_from_args(&mut args);
+    let repo_path = get_repo_arg(&mut args);
 
-    let mut build_path = match args.next() {
+    let build_path = canonicalize_dir(match args.next() {
         Some(path) => path,
         None => {
             return Err(Box::new(SimpleError(
                 "usage of `test`: test GECKO_DIR BUILD_DIR",
             )))
         }
-    };
-    if !build_path.ends_with("/") {
-        build_path += &"/";
-    }
-    let build_path = canonicalize_path(build_path);
+    });
+    let path_to_shell = build_path + "dist/bin/js";
 
     let path_to_jit_tests = Path::join(Path::new(&repo_path), "js/src/jit-test/jit_test.py");
-    let path_to_shell = build_path + "dist/bin/js";
 
     let shell_args = format!("--args \"{}\"", CRANELIFT_JS_SHELL_ARGS);
 
