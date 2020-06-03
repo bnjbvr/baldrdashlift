@@ -341,7 +341,7 @@ async fn run_local(mut args: Args) -> Result<(), Box<dyn Error>> {
             )));
         }
     };
-    let cranelift_path = canonicalize_dir(wasmtime_path) + &"cranelift";
+    let cranelift_path = canonicalize_dir(wasmtime_path) + &"cranelift/";
 
     let repo = check_gecko_repo(&repo_path)?;
 
