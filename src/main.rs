@@ -30,7 +30,8 @@ fn get_vcs_for_repo(path: &str) -> Result<Box<dyn VCS>, Box<dyn Error>> {
     }
 }
 
-const CRANELIFT_JS_SHELL_ARGS: &'static str = "--no-wasm-reftypes --no-wasm-simd --no-wasm-multi-value --shared-memory=off --wasm-compiler=cranelift";
+const CRANELIFT_JS_SHELL_ARGS: &'static str =
+    "--no-wasm-simd --shared-memory=off --wasm-compiler=cranelift";
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -199,7 +200,7 @@ fn replace_commit_sha(repo_path: &str, sha: &str) {
 async fn find_last_commit_sha(
     client: &reqwest::Client,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    const URL: &str = "https://api.github.com/repos/bytecodealliance/wasmtime/commits/master";
+    const URL: &str = "https://api.github.com/repos/bytecodealliance/wasmtime/commits/HEAD";
 
     let resp = client.get(URL).send().await?.text().await?;
     let object = json::parse(&resp)?;
@@ -208,11 +209,14 @@ async fn find_last_commit_sha(
     Ok(result.to_string())
 }
 
-fn mach_vendor_rust() -> Result<(), Box<dyn Error>> {
+fn mach_vendor_rust(allow_large: bool) -> Result<(), Box<dyn Error>> {
     println!("Running mach vendor rust...");
-    let status = Command::new("./mach")
-        .arg("vendor")
-        .arg("rust")
+    let mut command = Command::new("./mach");
+    command.arg("vendor").arg("rust");
+    if allow_large {
+        command.arg("--build-peers-said-large-imports-were-ok");
+    }
+    let status = command
         .spawn()
         .expect("couldn't run mach vendor rust")
         .wait()?;
@@ -266,6 +270,15 @@ async fn run_bump(mut args: Args) -> Result<(), Box<dyn Error>> {
     let repo_path = &get_repo_arg(&mut args);
     let repo = check_gecko_repo(repo_path)?;
 
+    let large_imports = if let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--allow-large" | "-a" => true,
+            _ => return Err(format!("unknown bump option: {}", arg).into()),
+        }
+    } else {
+        false
+    };
+
     let http_client = make_http_client();
 
     let version = get_cranelift_version(&http_client).await?;
@@ -281,7 +294,7 @@ async fn run_bump(mut args: Args) -> Result<(), Box<dyn Error>> {
     repo.commit(&format!("Bug XXX - Bump Cranelift to {}; r?", last_commit))?;
 
     // Run mach vendor rust.
-    mach_vendor_rust()?;
+    mach_vendor_rust(large_imports)?;
 
     // Commit the vendor changges.
     println!("Committing vendor patch...");
@@ -353,7 +366,7 @@ async fn run_local(mut args: Args) -> Result<(), Box<dyn Error>> {
     repo.commit("No bug - do not check in - use local Cranelift")?;
 
     // Run mach vendor rust.
-    mach_vendor_rust()?;
+    mach_vendor_rust(false)?;
 
     // Commit the vendor changges.
     println!("Committing vendor patch...");
