@@ -14,7 +14,9 @@ impl VCS for Git {
     fn is_repo(&self, path: &str) -> bool {
         let mut pathbuf = PathBuf::from(path);
         pathbuf.push(".git");
-        pathbuf.is_dir()
+        // `.git` is a directory in the root of a normal git repo, and a file in
+        // the root of a git-worktree checkout.
+        pathbuf.is_dir() || pathbuf.is_file()
     }
 
     fn commit(&self, msg: &str) -> Result<(), String> {
